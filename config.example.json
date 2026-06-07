@@ -1,0 +1,7 @@
+{
+  "listUrl": "https://train.yoyaku.jrkyushu.co.jp/jr/pc/rereserve/Reresv/list",
+  "downloadDirectory": "./downloads",
+  "fileNameTemplate": "JR九州_{year}{month}_{index}.pdf",
+  "receiptLinkPatterns": ["領収書", "領収書を表示", "領収書表示"],
+  "maxReceipts": 100
+}
