@@ -1,39 +1,40 @@
 # JR九州 領収書ダウンローダー
 
-JR九州インターネット列車予約の予約一覧画面から、表示されている領収書を順番に保存する
-TypeScript CLIです。
+JR九州インターネット列車予約の予約一覧画面から、表示されている領収書を順番に保存する TypeScript CLI です。
 
-## 前提
+## 安全寄りの運用
 
-- Node.js 22以降をインストールしてください。
-- 初回ログイン、ワンタイムパスワード、CAPTCHAなどは手動で操作します。
-- ログイン状態は `.auth/` にローカル保存されます。共有・コミットしないでください。
-- 対象期間の絞り込みが必要な場合は、ダウンロード実行前に表示ブラウザ上で操作してください。
+この版ではログインセッションを保存しません。毎回ブラウザで手動ログインし、領収書一覧まで移動したあと、ダウンロード処理だけを自動化します。
+
+- パスワード、Cookie、ログイン状態を `.auth/` に保存しません。
+- ワンタイムパスワード、CAPTCHA、追加認証は手動で対応します。
+- ブラウザを閉じるとログイン状態は基本的に残りません。
 - 会社への送信処理は含みません。送信先・送信方法が決まれば別処理として追加できます。
 
 ## セットアップ
 
-```powershell
-npm install
-npx playwright install chromium
-Copy-Item config.example.json config.json
-npm run download -- --setup
-```
+Node.js 22 以降をインストールしてください。
 
-ブラウザでログインし、領収書を取得したい予約一覧を表示してから、ターミナルで Enter を押します。
+```powershell
+npm.cmd install
+npx.cmd playwright install chromium
+Copy-Item config.example.json config.json
+```
 
 ## ダウンロード
 
 まず保存予定を確認します。
 
 ```powershell
-npm run download -- --dry-run
+npm.cmd run download -- --dry-run
 ```
+
+ブラウザが開いたら、JR九州にログインし、領収書を取得したい予約一覧を表示してください。準備ができたらターミナルで Enter を押します。
 
 問題なければダウンロードします。
 
 ```powershell
-npm run download
+npm.cmd run download
 ```
 
 既に同名ファイルがある場合は上書きせずスキップします。

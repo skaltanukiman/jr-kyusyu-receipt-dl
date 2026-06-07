@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { chromium, type BrowserContext, type Locator, type Page } from "playwright";
+import { chromium, type Browser, type Locator, type Page } from "playwright";
 
 type Config = {
   listUrl: string;
@@ -21,7 +21,6 @@ const defaultConfig: Config = {
 };
 
 const root = process.cwd();
-const authDirectory = path.resolve(root, ".auth", "jr-kyushu");
 
 async function loadConfig(): Promise<Config> {
   const configPath = path.resolve(root, "config.json");
@@ -50,28 +49,27 @@ function formatFileName(template: string, index: number): string {
     .replaceAll("{index}", String(index).padStart(2, "0"));
 }
 
-function parseArgs(): { setup: boolean; dryRun: boolean } {
+function parseArgs(): { dryRun: boolean } {
+  if (process.argv.includes("--setup")) {
+    throw new Error("--setup は廃止しました。安全寄り運用では毎回手動ログインします。");
+  }
+
   return {
-    setup: process.argv.includes("--setup"),
     dryRun: process.argv.includes("--dry-run"),
   };
 }
 
-async function openContext(): Promise<BrowserContext> {
-  await mkdir(authDirectory, { recursive: true });
-  return chromium.launchPersistentContext(authDirectory, {
+async function openBrowser(): Promise<Browser> {
+  return chromium.launch({
     headless: false,
-    acceptDownloads: true,
-    locale: "ja-JP",
   });
 }
 
 async function findReceiptControls(page: Page, patterns: string[]): Promise<Locator> {
   const pattern = new RegExp(patterns.map(escapeRegExp).join("|"));
-  const controls = page.getByRole("link", { name: pattern }).or(
+  return page.getByRole("link", { name: pattern }).or(
     page.getByRole("button", { name: pattern }),
   );
-  return controls;
 }
 
 function escapeRegExp(value: string): string {
@@ -83,19 +81,19 @@ async function saveReceipt(
   control: Locator,
   targetPath: string,
 ): Promise<void> {
-  const resultPromise = Promise.race([
-    page.waitForEvent("download", { timeout: 15_000 }).then((download) => ({
-      type: "download" as const,
-      download,
-    })),
-    page.waitForEvent("popup", { timeout: 15_000 }).then((popup) => ({
-      type: "popup" as const,
-      popup,
-    })),
-  ]);
+  const downloadPromise = page.waitForEvent("download", { timeout: 15_000 })
+    .then((download) => ({ type: "download" as const, download }))
+    .catch(() => null);
+  const popupPromise = page.waitForEvent("popup", { timeout: 15_000 })
+    .then((popup) => ({ type: "popup" as const, popup }))
+    .catch(() => null);
 
   await control.click();
-  const result = await resultPromise;
+  const result = await Promise.race([downloadPromise, popupPromise]);
+
+  if (!result) {
+    throw new Error("ダウンロードまたは領収書の別画面を検出できませんでした。");
+  }
 
   if (result.type === "download") {
     await result.download.saveAs(targetPath);
@@ -123,24 +121,24 @@ async function main(): Promise<void> {
   const config = await loadConfig();
   const args = parseArgs();
   const downloadDirectory = path.resolve(root, config.downloadDirectory);
-  const context = await openContext();
-  const page = context.pages()[0] ?? (await context.newPage());
+  const browser = await openBrowser();
+  const context = await browser.newContext({
+    acceptDownloads: true,
+    locale: "ja-JP",
+  });
+  const page = await context.newPage();
 
   try {
     await page.goto(config.listUrl, { waitUntil: "domcontentloaded" });
-
-    if (args.setup) {
-      console.log("ログイン後、予約一覧画面を表示してください。完了したら Enter を押します。");
-      await waitForEnter();
-      console.log(`ログイン状態を ${authDirectory} に保存しました。`);
-      return;
-    }
+    console.log("ブラウザでログインし、領収書を取得したい予約一覧を表示してください。");
+    console.log("準備ができたら、このターミナルで Enter を押してください。");
+    await waitForEnter();
 
     const controls = await findReceiptControls(page, config.receiptLinkPatterns);
     const count = Math.min(await controls.count(), config.maxReceipts);
     if (count === 0) {
       throw new Error(
-        "領収書ボタンが見つかりません。ログイン切れ、対象期間、または画面文言を確認してください。",
+        "領収書ボタンが見つかりません。対象期間、画面文言、またはログイン状態を確認してください。",
       );
     }
 
@@ -163,6 +161,7 @@ async function main(): Promise<void> {
     }
   } finally {
     await context.close();
+    await browser.close();
   }
 }
 
