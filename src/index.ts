@@ -1,12 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
-import { chromium, type Browser, type Locator, type Page } from "playwright";
+import { chromium, type Browser, type Download, type Locator, type Page } from "playwright";
 
 type Config = {
   startUrl: string;
@@ -14,6 +14,7 @@ type Config = {
   fileNameTemplate: string;
   receiptLinkPatterns: string[];
   detailButtonPatterns: string[];
+  printButtonPatterns: string[];
   maxReceipts: number;
   edgeExecutablePath?: string;
   startupTimeoutMs: number;
@@ -21,6 +22,7 @@ type Config = {
 
 type BrowserSession = {
   browser: Browser;
+  downloadsDirectory: string;
   edgeProcess: ChildProcess;
   page: Page;
   profileDirectory: string;
@@ -30,12 +32,19 @@ type RunArgs = {
   dryRun: boolean;
 };
 
+type ReceiptClickResult =
+  | { type: "download"; download: Download }
+  | { type: "file"; filePath: string }
+  | { type: "receiptPage"; receiptPage: Page }
+  | { type: "intermediatePage"; page: Page };
+
 const defaultConfig: Config = {
   startUrl: "https://train.yoyaku.jrkyushu.co.jp/jr/login",
   downloadDirectory: "./downloads",
   fileNameTemplate: "JR九州_{year}{month}_{index}.pdf",
   receiptLinkPatterns: ["領収書", "領収書を表示", "領収書表示"],
   detailButtonPatterns: ["詳細"],
+  printButtonPatterns: ["印刷"],
   maxReceipts: 100,
   startupTimeoutMs: 30_000,
 };
@@ -90,6 +99,7 @@ function parseArgs(): RunArgs {
 
 async function openBrowserSession(config: Config): Promise<BrowserSession> {
   const edgeExecutablePath = findEdgeExecutable(config);
+  const downloadsDirectory = await mkdtemp(path.join(tmpdir(), "jr-kyushu-downloads-"));
   const profileDirectory = await mkdtemp(path.join(tmpdir(), "jr-kyushu-edge-"));
   const port = await findFreePort();
   const endpoint = `http://127.0.0.1:${port}`;
@@ -112,9 +122,11 @@ async function openBrowserSession(config: Config): Promise<BrowserSession> {
     await waitForCdp(endpoint, config.startupTimeoutMs);
     const browser = await chromium.connectOverCDP(endpoint);
     const page = await findAutomationPage(browser, config.startUrl);
-    return { browser, edgeProcess, page, profileDirectory };
+    await configureDownloads(page, downloadsDirectory);
+    return { browser, downloadsDirectory, edgeProcess, page, profileDirectory };
   } catch (error) {
     edgeProcess.kill();
+    await rm(downloadsDirectory, { recursive: true, force: true });
     await rm(profileDirectory, { recursive: true, force: true });
     throw error;
   }
@@ -178,15 +190,31 @@ async function waitForCdp(endpoint: string, timeoutMs: number): Promise<void> {
 }
 
 async function findAutomationPage(browser: Browser, startUrl: string): Promise<Page> {
-  const existingPages = browser.contexts().flatMap((context) => context.pages());
-  const page = existingPages.find((candidate) => candidate.url().startsWith("https://train.yoyaku.jrkyushu.co.jp/"))
-    ?? existingPages[0]
+  const existingPages = browser.contexts()
+    .flatMap((context) => context.pages())
+    .filter((candidate) => !candidate.isClosed());
+  const jrKyushuPages = existingPages.filter((candidate) => candidate.url().startsWith("https://train.yoyaku.jrkyushu.co.jp/"));
+  const page = jrKyushuPages.find((candidate) => candidate.url().includes("/rereserve/Reresv/list"))
+    ?? jrKyushuPages.at(-1)
+    ?? existingPages.at(-1)
     ?? await browser.contexts()[0].newPage();
 
   if (page.url() === "about:blank") {
     await page.goto(startUrl, { waitUntil: "domcontentloaded" });
   }
   return page;
+}
+
+async function configureDownloads(page: Page, downloadsDirectory: string): Promise<void> {
+  const cdpSession = await page.context().newCDPSession(page);
+  try {
+    await cdpSession.send("Page.setDownloadBehavior" as never, {
+      behavior: "allow",
+      downloadPath: downloadsDirectory,
+    } as never);
+  } finally {
+    await cdpSession.detach().catch(() => undefined);
+  }
 }
 
 function findControls(page: Page, patterns: string[]): Locator {
@@ -202,6 +230,11 @@ function findReceiptControls(page: Page, config: Config): Locator {
 
 function findDetailControls(page: Page, config: Config): Locator {
   return findControls(page, config.detailButtonPatterns);
+}
+
+function findPrintControls(page: Page, config: Config): Locator {
+  const pattern = new RegExp(config.printButtonPatterns.map(escapeRegExp).join("|"));
+  return findControls(page, config.printButtonPatterns).or(page.getByText(pattern));
 }
 
 function escapeRegExp(value: string): string {
@@ -222,12 +255,12 @@ async function visibleControlNames(page: Page): Promise<string[]> {
 }
 
 async function clickMaybeNavigates(page: Page, control: Locator): Promise<Page> {
-  const popupPromise = page.waitForEvent("popup", { timeout: 5_000 }).catch(() => null);
-  const navigationPromise = page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 15_000 }).catch(() => null);
+  const popupPromise = page.waitForEvent("popup", { timeout: 5_000 });
+  const navigationPromise = page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 15_000 });
 
   await control.click();
-  const popup = await popupPromise;
-  await navigationPromise;
+  const popup = await popupPromise.catch(() => null);
+  await navigationPromise.catch(() => null);
 
   if (popup) {
     await popup.waitForLoadState("domcontentloaded").catch(() => undefined);
@@ -241,19 +274,36 @@ async function saveReceipt(
   page: Page,
   control: Locator,
   targetPath: string,
+  downloadsDirectory: string,
+  config: Config,
 ): Promise<void> {
-  const downloadPromise = page.waitForEvent("download", { timeout: 15_000 })
-    .then((download) => ({ type: "download" as const, download }))
-    .catch(() => null);
-  const popupPromise = page.waitForEvent("popup", { timeout: 15_000 })
-    .then((popup) => ({ type: "popup" as const, popup }))
-    .catch(() => null);
+  await mkdir(path.dirname(targetPath), { recursive: true });
 
-  await control.click();
-  const result = await Promise.race([downloadPromise, popupPromise]);
+  let currentPage = page;
+  let currentControl = control;
+  let result: ReceiptClickResult | null = null;
 
-  if (!result) {
-    throw new Error("ダウンロードまたは領収書の別画面を検出できませんでした。");
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    result = await clickReceiptControlAndWait(currentPage, currentControl, downloadsDirectory);
+    if (!result || result.type !== "intermediatePage") {
+      break;
+    }
+
+    currentPage = result.page;
+    const followUpControls = findReceiptControls(currentPage, config);
+    if (await followUpControls.count() === 0) {
+      break;
+    }
+
+    currentControl = followUpControls.first();
+  }
+
+  if (!result || result.type === "intermediatePage") {
+    const currentUrl = currentPage.url();
+    const visibleNames = await visibleControlNames(currentPage).catch(() => []);
+    throw new Error(
+      `領収書クリック後の変化を検出できませんでした。URL: ${page.url()} -> ${currentUrl} / 主なボタン: ${visibleNames.join(" / ")}`,
+    );
   }
 
   if (result.type === "download") {
@@ -261,14 +311,210 @@ async function saveReceipt(
     return;
   }
 
-  const popup = result.popup;
+  if (result.type === "file") {
+    await moveDownloadedFile(result.filePath, targetPath);
+    return;
+  }
+
+  await saveReceiptPageAsPrintedPdf(result.receiptPage, targetPath, config);
+  if (result.receiptPage !== page) {
+    await result.receiptPage.close().catch(() => undefined);
+  }
+}
+
+async function clickReceiptControlAndWait(
+  page: Page,
+  control: Locator,
+  downloadsDirectory: string,
+): Promise<ReceiptClickResult | null> {
+  const beforeFiles = await downloadableFileSet(downloadsDirectory);
+  const beforeUrl = page.url();
+  const beforePages = new Set(page.context().pages());
+  const downloadPromise = page.waitForEvent("download", { timeout: 20_000 })
+    .then((download) => ({ type: "download" as const, download }));
+  const receiptPagePromise = waitForReceiptPageAfterClick(page, beforeUrl, beforePages, 15_000)
+    .then((receiptPage) => ({ type: "receiptPage" as const, receiptPage }));
+  const intermediatePagePromise = waitForIntermediateReceiptPageAfterClick(page, beforeUrl, 7_000)
+    .then((intermediatePage) => ({ type: "intermediatePage" as const, page: intermediatePage }));
+  const filePromise = waitForDownloadedFile(downloadsDirectory, beforeFiles, 25_000)
+    .then((filePath) => ({ type: "file" as const, filePath }));
+
+  await control.click();
+
+  return firstSuccessful<ReceiptClickResult>([
+    downloadPromise,
+    receiptPagePromise,
+    intermediatePagePromise,
+    filePromise,
+  ]).catch(() => null);
+}
+
+async function firstSuccessful<T>(promises: Array<Promise<T>>): Promise<T> {
+  return Promise.any(promises);
+}
+
+async function waitForReceiptPageAfterClick(
+  sourcePage: Page,
+  beforeUrl: string,
+  beforePages: Set<Page>,
+  timeoutMs: number,
+): Promise<Page> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const receiptPage = sourcePage.context().pages()
+      .filter((candidate) => !candidate.isClosed())
+      .find((candidate) => {
+        const isNewPage = !beforePages.has(candidate);
+        const isSourcePageAfterNavigation = candidate === sourcePage && candidate.url() !== beforeUrl;
+        return (isNewPage || isSourcePageAfterNavigation) && isReceiptPageUrl(candidate.url());
+      });
+
+    if (receiptPage) {
+      await receiptPage.waitForLoadState("domcontentloaded").catch(() => undefined);
+      return receiptPage;
+    }
+
+    await delay(250);
+  }
+
+  throw new Error("領収書ページが開かれませんでした。");
+}
+
+function isReceiptPageUrl(url: string): boolean {
+  return /\/pc\/reserve\/\d+(?:[/?#]|$)/.test(url);
+}
+
+async function waitForIntermediateReceiptPageAfterClick(
+  page: Page,
+  beforeUrl: string,
+  timeoutMs: number,
+): Promise<Page> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (!page.isClosed() && page.url() !== beforeUrl && isIntermediateReceiptPageUrl(page.url())) {
+      await page.waitForLoadState("domcontentloaded").catch(() => undefined);
+      return page;
+    }
+
+    await delay(250);
+  }
+
+  throw new Error("領収書の中間ページが開かれませんでした。");
+}
+
+function isIntermediateReceiptPageUrl(url: string): boolean {
+  return /\/pc\/rereserve\/ReresvDetail\/print(?:[/?#]|$)/.test(url);
+}
+
+async function downloadableFileSet(downloadsDirectory: string): Promise<Set<string>> {
+  await mkdir(downloadsDirectory, { recursive: true });
+  return new Set(await readdir(downloadsDirectory));
+}
+
+async function waitForDownloadedFile(
+  downloadsDirectory: string,
+  beforeFiles: Set<string>,
+  timeoutMs: number,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const files = await readdir(downloadsDirectory).catch(() => []);
+    for (const file of files) {
+      if (beforeFiles.has(file) || isTemporaryDownload(file)) {
+        continue;
+      }
+
+      const filePath = path.join(downloadsDirectory, file);
+      if (await isStableFile(filePath)) {
+        return filePath;
+      }
+    }
+    await delay(300);
+  }
+
+  throw new Error("ダウンロードファイルを検出できませんでした。");
+}
+
+function isTemporaryDownload(fileName: string): boolean {
+  return fileName.endsWith(".crdownload") || fileName.endsWith(".tmp") || fileName.endsWith(".download");
+}
+
+async function isStableFile(filePath: string): Promise<boolean> {
+  const first = await stat(filePath).catch(() => null);
+  if (!first || !first.isFile()) {
+    return false;
+  }
+
+  await delay(500);
+  const second = await stat(filePath).catch(() => null);
+  return Boolean(second?.isFile() && second.size === first.size && second.size > 0);
+}
+
+async function moveDownloadedFile(sourcePath: string, targetPath: string): Promise<void> {
+  await rm(targetPath, { force: true });
+  await rename(sourcePath, targetPath);
+}
+
+async function saveReceiptPageAsPrintedPdf(page: Page, targetPath: string, config: Config): Promise<void> {
+  await page.waitForLoadState("domcontentloaded").catch(() => undefined);
+  await runPrintButtonHandlers(page, config);
+
+  await page.emulateMedia({ media: "print" });
+  const cdpSession = await page.context().newCDPSession(page);
+  try {
+    const result = await cdpSession.send("Page.printToPDF", {
+      displayHeaderFooter: true,
+      footerTemplate: `<div style="font-size:8px; width:100%; padding:0 8mm;"><span class="url"></span><span style="float:right"><span class="pageNumber"></span>/<span class="totalPages"></span></span></div>`,
+      headerTemplate: `<div style="font-size:8px; width:100%; padding:0 8mm;"><span class="date"></span><span style="display:inline-block; width:70%; text-align:center;">ネット予約</span></div>`,
+      landscape: false,
+      marginBottom: 0.4,
+      marginLeft: 0.35,
+      marginRight: 0.35,
+      marginTop: 0.4,
+      paperHeight: 11.69,
+      paperWidth: 8.27,
+      preferCSSPageSize: true,
+      printBackground: true,
+    });
+    await writeFile(targetPath, Buffer.from(result.data, "base64"));
+  } finally {
+    await cdpSession.detach().catch(() => undefined);
+    await page.emulateMedia({ media: null }).catch(() => undefined);
+    await page.evaluate(() => window.dispatchEvent(new Event("afterprint"))).catch(() => undefined);
+  }
+}
+
+async function runPrintButtonHandlers(page: Page, config: Config): Promise<void> {
+  const printControls = findPrintControls(page, config);
+  if (await printControls.count() === 0) {
+    const visibleNames = await visibleControlNames(page).catch(() => []);
+    console.log(`印刷ボタンが見つかりません。印刷用PDF化だけ実行します。主なボタン/リンク: ${visibleNames.join(" / ")}`);
+    return;
+  }
+
+  await page.evaluate(() => {
+    const windowWithPrintFlag = window as Window & { __jrKyushuPrintCalled?: boolean };
+    windowWithPrintFlag.__jrKyushuPrintCalled = false;
+    window.print = () => {
+      windowWithPrintFlag.__jrKyushuPrintCalled = true;
+      window.dispatchEvent(new Event("beforeprint"));
+    };
+  });
+
+  await printControls.first().click({ timeout: 5_000 }).catch(() => undefined);
+  await page.waitForTimeout(500);
+}
+
+async function savePopupAsReceipt(popup: Page, targetPath: string): Promise<void> {
   await popup.waitForLoadState("domcontentloaded");
   const response = await popup.request.get(popup.url());
   if (!response.ok()) {
     throw new Error(`領収書画面の取得に失敗しました: ${response.status()}`);
   }
 
-  await mkdir(path.dirname(targetPath), { recursive: true });
   const contentType = response.headers()["content-type"] ?? "";
   if (contentType.includes("application/pdf")) {
     await writeFile(targetPath, await response.body());
@@ -283,6 +529,7 @@ async function processReceiptControls(
   config: Config,
   args: RunArgs,
   downloadDirectory: string,
+  downloadsDirectory: string,
   startIndex: number,
 ): Promise<number> {
   const controls = findReceiptControls(page, config);
@@ -300,7 +547,7 @@ async function processReceiptControls(
       continue;
     }
 
-    await saveReceipt(page, controls.nth(i), targetPath);
+    await saveReceipt(page, controls.nth(i), targetPath, downloadsDirectory, config);
     console.log(`保存: ${targetPath}`);
   }
 
@@ -312,6 +559,7 @@ async function processReservationDetails(
   config: Config,
   args: RunArgs,
   downloadDirectory: string,
+  downloadsDirectory: string,
 ): Promise<number> {
   const listUrl = page.url();
   await page.waitForLoadState("domcontentloaded").catch(() => undefined);
@@ -351,6 +599,7 @@ async function processReservationDetails(
         config,
         args,
         downloadDirectory,
+        downloadsDirectory,
         savedOrPlanned + 1,
       );
     }
@@ -383,10 +632,14 @@ async function main(): Promise<void> {
 
     await mkdir(downloadDirectory, { recursive: true });
 
-    const directReceiptCount = await findReceiptControls(session.page, config).count();
+    const activePage = await findAutomationPage(session.browser, config.startUrl);
+    await configureDownloads(activePage, session.downloadsDirectory);
+    console.log(`対象ページ: ${activePage.url()}`);
+
+    const directReceiptCount = await findReceiptControls(activePage, config).count();
     const processedCount = directReceiptCount > 0
-      ? await processReceiptControls(session.page, config, args, downloadDirectory, 1)
-      : await processReservationDetails(session.page, config, args, downloadDirectory);
+      ? await processReceiptControls(activePage, config, args, downloadDirectory, session.downloadsDirectory, 1)
+      : await processReservationDetails(activePage, config, args, downloadDirectory, session.downloadsDirectory);
 
     if (processedCount === 0) {
       throw new Error("領収書を1件も検出できませんでした。詳細画面の表示内容を確認してください。");
@@ -397,6 +650,7 @@ async function main(): Promise<void> {
     await session.browser.close().catch(() => undefined);
     session.edgeProcess.kill();
     await delay(500);
+    await rm(session.downloadsDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
     await rm(session.profileDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
   }
 }
