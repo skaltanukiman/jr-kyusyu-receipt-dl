@@ -467,8 +467,6 @@ async function saveReceiptPageAsPrintedPdf(page: Page, targetPath: string, confi
   try {
     const result = await cdpSession.send("Page.printToPDF", {
       displayHeaderFooter: true,
-      footerTemplate: `<div style="font-size:8px; width:100%; padding:0 8mm;"><span class="url"></span><span style="float:right"><span class="pageNumber"></span>/<span class="totalPages"></span></span></div>`,
-      headerTemplate: `<div style="font-size:8px; width:100%; padding:0 8mm;"><span class="date"></span><span style="display:inline-block; width:70%; text-align:center;">ネット予約</span></div>`,
       landscape: false,
       marginBottom: 0.4,
       marginLeft: 0.35,
@@ -476,8 +474,8 @@ async function saveReceiptPageAsPrintedPdf(page: Page, targetPath: string, confi
       marginTop: 0.4,
       paperHeight: 11.69,
       paperWidth: 8.27,
-      preferCSSPageSize: true,
-      printBackground: true,
+      preferCSSPageSize: false,
+      printBackground: false,
     });
     await writeFile(targetPath, Buffer.from(result.data, "base64"));
   } finally {
@@ -519,7 +517,7 @@ async function savePopupAsReceipt(popup: Page, targetPath: string): Promise<void
   if (contentType.includes("application/pdf")) {
     await writeFile(targetPath, await response.body());
   } else {
-    await popup.pdf({ path: targetPath, format: "A4", printBackground: true });
+    await popup.pdf({ path: targetPath, format: "A4", printBackground: false });
   }
   await popup.close();
 }
