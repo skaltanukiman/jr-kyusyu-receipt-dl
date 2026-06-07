@@ -13,6 +13,7 @@ type Config = {
   downloadDirectory: string;
   fileNameTemplate: string;
   receiptLinkPatterns: string[];
+  detailButtonPatterns: string[];
   maxReceipts: number;
   edgeExecutablePath?: string;
   startupTimeoutMs: number;
@@ -25,11 +26,16 @@ type BrowserSession = {
   profileDirectory: string;
 };
 
+type RunArgs = {
+  dryRun: boolean;
+};
+
 const defaultConfig: Config = {
   startUrl: "https://train.yoyaku.jrkyushu.co.jp/jr/login",
   downloadDirectory: "./downloads",
   fileNameTemplate: "JR九州_{year}{month}_{index}.pdf",
   receiptLinkPatterns: ["領収書", "領収書を表示", "領収書表示"],
+  detailButtonPatterns: ["詳細"],
   maxReceipts: 100,
   startupTimeoutMs: 30_000,
 };
@@ -72,7 +78,7 @@ function formatFileName(template: string, index: number): string {
     .replaceAll("{index}", String(index).padStart(2, "0"));
 }
 
-function parseArgs(): { dryRun: boolean } {
+function parseArgs(): RunArgs {
   if (process.argv.includes("--setup")) {
     throw new Error("--setup は廃止しました。安全寄り運用では毎回手動ログインします。");
   }
@@ -183,15 +189,52 @@ async function findAutomationPage(browser: Browser, startUrl: string): Promise<P
   return page;
 }
 
-async function findReceiptControls(page: Page, patterns: string[]): Promise<Locator> {
+function findControls(page: Page, patterns: string[]): Locator {
   const pattern = new RegExp(patterns.map(escapeRegExp).join("|"));
   return page.getByRole("link", { name: pattern }).or(
     page.getByRole("button", { name: pattern }),
   );
 }
 
+function findReceiptControls(page: Page, config: Config): Locator {
+  return findControls(page, config.receiptLinkPatterns);
+}
+
+function findDetailControls(page: Page, config: Config): Locator {
+  return findControls(page, config.detailButtonPatterns);
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function visibleControlNames(page: Page): Promise<string[]> {
+  return page.locator('a, button, input[type="button"], input[type="submit"]').evaluateAll((elements) => {
+    const names = elements
+      .map((element) => {
+        const input = element as HTMLInputElement;
+        return input.value || element.textContent || element.getAttribute("aria-label") || "";
+      })
+      .map((name) => name.replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+    return [...new Set(names)].slice(0, 30);
+  });
+}
+
+async function clickMaybeNavigates(page: Page, control: Locator): Promise<Page> {
+  const popupPromise = page.waitForEvent("popup", { timeout: 5_000 }).catch(() => null);
+  const navigationPromise = page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 15_000 }).catch(() => null);
+
+  await control.click();
+  const popup = await popupPromise;
+  await navigationPromise;
+
+  if (popup) {
+    await popup.waitForLoadState("domcontentloaded").catch(() => undefined);
+    return popup;
+  }
+  await page.waitForLoadState("domcontentloaded").catch(() => undefined);
+  return page;
 }
 
 async function saveReceipt(
@@ -235,6 +278,98 @@ async function saveReceipt(
   await popup.close();
 }
 
+async function processReceiptControls(
+  page: Page,
+  config: Config,
+  args: RunArgs,
+  downloadDirectory: string,
+  startIndex: number,
+): Promise<number> {
+  const controls = findReceiptControls(page, config);
+  const count = Math.min(await controls.count(), config.maxReceipts - startIndex + 1);
+
+  for (let i = 0; i < count; i += 1) {
+    const receiptIndex = startIndex + i;
+    const targetPath = path.join(downloadDirectory, formatFileName(config.fileNameTemplate, receiptIndex));
+    if (existsSync(targetPath)) {
+      console.log(`スキップ: ${path.basename(targetPath)} は既に存在します。`);
+      continue;
+    }
+    if (args.dryRun) {
+      console.log(`保存予定: ${targetPath}`);
+      continue;
+    }
+
+    await saveReceipt(page, controls.nth(i), targetPath);
+    console.log(`保存: ${targetPath}`);
+  }
+
+  return count;
+}
+
+async function processReservationDetails(
+  page: Page,
+  config: Config,
+  args: RunArgs,
+  downloadDirectory: string,
+): Promise<number> {
+  const listUrl = page.url();
+  await page.waitForLoadState("domcontentloaded").catch(() => undefined);
+
+  const detailCount = await findDetailControls(page, config).count();
+  if (detailCount === 0) {
+    const visibleNames = await visibleControlNames(page);
+    throw new Error(
+      `詳細ボタンも領収書ボタンも見つかりません。画面上の主なボタン/リンク: ${visibleNames.join(" / ")}`,
+    );
+  }
+
+  console.log(`${detailCount} 件の予約詳細を順番に確認します。`);
+  let savedOrPlanned = 0;
+
+  for (let detailIndex = 0; detailIndex < detailCount && savedOrPlanned < config.maxReceipts; detailIndex += 1) {
+    await ensureListPage(page, listUrl);
+
+    const details = findDetailControls(page, config);
+    const currentDetailCount = await details.count();
+    if (detailIndex >= currentDetailCount) {
+      break;
+    }
+
+    console.log(`${detailIndex + 1} 件目の詳細画面を確認します。`);
+    const detailPage = await clickMaybeNavigates(page, details.nth(detailIndex));
+    const receiptCount = await findReceiptControls(detailPage, config).count();
+
+    if (receiptCount === 0) {
+      const visibleNames = await visibleControlNames(detailPage);
+      console.log(
+        `スキップ: ${detailIndex + 1} 件目の詳細画面で領収書ボタンが見つかりません。主なボタン/リンク: ${visibleNames.join(" / ")}`,
+      );
+    } else {
+      savedOrPlanned += await processReceiptControls(
+        detailPage,
+        config,
+        args,
+        downloadDirectory,
+        savedOrPlanned + 1,
+      );
+    }
+
+    if (detailPage !== page) {
+      await detailPage.close().catch(() => undefined);
+    }
+  }
+
+  return savedOrPlanned;
+}
+
+async function ensureListPage(page: Page, listUrl: string): Promise<void> {
+  if (page.url() !== listUrl) {
+    await page.goto(listUrl, { waitUntil: "domcontentloaded" });
+  }
+  await page.waitForLoadState("domcontentloaded").catch(() => undefined);
+}
+
 async function main(): Promise<void> {
   const config = await loadConfig();
   const args = parseArgs();
@@ -246,31 +381,18 @@ async function main(): Promise<void> {
     console.log("準備ができたら、このターミナルで Enter を押してください。");
     await waitForEnter();
 
-    const controls = await findReceiptControls(session.page, config.receiptLinkPatterns);
-    const count = Math.min(await controls.count(), config.maxReceipts);
-    if (count === 0) {
-      throw new Error(
-        "領収書ボタンが見つかりません。対象期間、画面文言、またはログイン状態を確認してください。",
-      );
-    }
-
     await mkdir(downloadDirectory, { recursive: true });
-    console.log(`${count} 件の領収書を検出しました。`);
 
-    for (let i = 0; i < count; i += 1) {
-      const targetPath = path.join(downloadDirectory, formatFileName(config.fileNameTemplate, i + 1));
-      if (existsSync(targetPath)) {
-        console.log(`スキップ: ${path.basename(targetPath)} は既に存在します。`);
-        continue;
-      }
-      if (args.dryRun) {
-        console.log(`保存予定: ${targetPath}`);
-        continue;
-      }
+    const directReceiptCount = await findReceiptControls(session.page, config).count();
+    const processedCount = directReceiptCount > 0
+      ? await processReceiptControls(session.page, config, args, downloadDirectory, 1)
+      : await processReservationDetails(session.page, config, args, downloadDirectory);
 
-      await saveReceipt(session.page, controls.nth(i), targetPath);
-      console.log(`保存: ${targetPath}`);
+    if (processedCount === 0) {
+      throw new Error("領収書を1件も検出できませんでした。詳細画面の表示内容を確認してください。");
     }
+
+    console.log(`${processedCount} 件の領収書を処理しました。`);
   } finally {
     await session.browser.close().catch(() => undefined);
     session.edgeProcess.kill();
