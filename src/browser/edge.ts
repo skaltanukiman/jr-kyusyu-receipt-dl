@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -48,6 +49,61 @@ export async function openBrowserSession(config: Config): Promise<BrowserSession
     await rm(profileDirectory, { recursive: true, force: true });
     throw error;
   }
+}
+
+export async function closeBrowserSession(session: BrowserSession): Promise<void> {
+  await session.browser.close().catch(() => undefined);
+  await stopEdgeProcess(session.edgeProcess);
+  await delay(500);
+  await rm(session.downloadsDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
+  await rm(session.profileDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
+}
+
+async function stopEdgeProcess(edgeProcess: ChildProcess): Promise<void> {
+  if (edgeProcess.exitCode !== null || edgeProcess.signalCode !== null) {
+    return;
+  }
+
+  edgeProcess.kill();
+  if (await waitForProcessExit(edgeProcess, 2_000)) {
+    return;
+  }
+
+  if (edgeProcess.pid) {
+    await forceKillProcessTree(edgeProcess.pid);
+    await waitForProcessExit(edgeProcess, 2_000);
+  }
+}
+
+function waitForProcessExit(edgeProcess: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (edgeProcess.exitCode !== null || edgeProcess.signalCode !== null) {
+    return Promise.resolve(true);
+  }
+
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      edgeProcess.off("exit", onExit);
+      resolve(false);
+    }, timeoutMs);
+
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+
+    edgeProcess.once("exit", onExit);
+  });
+}
+
+async function forceKillProcessTree(pid: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const taskkill = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    taskkill.once("exit", () => resolve());
+    taskkill.once("error", () => resolve());
+  });
 }
 
 function findEdgeExecutable(config: Config): string {

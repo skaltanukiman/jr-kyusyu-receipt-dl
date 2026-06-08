@@ -1,14 +1,14 @@
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { setTimeout as delay } from "node:timers/promises";
 import { configureDownloads } from "./browser/downloads.js";
-import { openBrowserSession } from "./browser/edge.js";
+import { closeBrowserSession, openBrowserSession } from "./browser/edge.js";
 import { findAutomationPage } from "./browser/page.js";
 import { parseArgs } from "./cli/args.js";
 import { waitForEnter } from "./cli/prompt.js";
 import { formatTargetMonthLog, promptTargetMonth } from "./cli/targetMonth.js";
 import { loadConfig } from "./config/config.js";
+import { printDownloadSummary } from "./files/downloadSummary.js";
 import { isAllTargetMonth } from "./jrKyushu/departureDate.js";
 import { findReceiptControls } from "./jrKyushu/locators.js";
 import {
@@ -39,10 +39,13 @@ export async function main(): Promise<void> {
     console.log(`対象ページ: ${activePage.url()}`);
 
     const directReceiptCount = await findReceiptControls(activePage, config).count();
+    const directReceiptResult = directReceiptCount > 0
+      ? await processReceiptControls(activePage, config, args, downloadDirectory, session.downloadsDirectory, 1, null)
+      : null;
     const result = directReceiptCount > 0
       ? {
         matchedRowCount: directReceiptCount,
-        processedCount: await processReceiptControls(activePage, config, args, downloadDirectory, session.downloadsDirectory, 1),
+        summary: directReceiptResult!.summary,
       }
       : await processReservationDetails(activePage, config, args, downloadDirectory, session.downloadsDirectory, targetMonth);
 
@@ -51,16 +54,12 @@ export async function main(): Promise<void> {
       return;
     }
 
-    if (result.processedCount === 0) {
-      throw new Error("領収書を1件も検出できませんでした。詳細画面の表示内容を確認してください。");
+    if (result.summary.totalCount === 0) {
+      throw new Error("領収書を1件もダウンロードできませんでした。詳細画面の表示内容を確認してください。");
     }
 
-    console.log(`${result.processedCount} 件の領収書を処理しました。`);
+    printDownloadSummary(result.summary);
   } finally {
-    await session.browser.close().catch(() => undefined);
-    session.edgeProcess.kill();
-    await delay(500);
-    await rm(session.downloadsDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
-    await rm(session.profileDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
+    await closeBrowserSession(session);
   }
 }

@@ -3,16 +3,27 @@ import path from "node:path";
 import type { Locator, Page } from "playwright";
 import type { RunArgs } from "../cli/args.js";
 import { clickMaybeNavigates, visibleControlNames } from "../browser/page.js";
+import {
+  addDownloadedReceipt,
+  createDownloadSummary,
+  mergeDownloadSummaries,
+} from "../files/downloadSummary.js";
 import { formatFileName } from "../files/fileName.js";
 import type { Config } from "../types/config.js";
-import type { TargetMonth } from "../types/targetMonth.js";
-import { isAllTargetMonth, matchesTargetMonth, parseDepartureYearMonth } from "./departureDate.js";
+import type { DownloadSummary } from "../types/downloadSummary.js";
+import type { DepartureYearMonth, TargetMonth } from "../types/targetMonth.js";
+import { matchesTargetMonth, parseDepartureYearMonth } from "./departureDate.js";
 import { findDetailControls, findReceiptControls } from "./locators.js";
 import { saveReceipt } from "./receipt.js";
 
-type ReservationProcessResult = {
+export type ReservationProcessResult = {
   matchedRowCount: number;
-  processedCount: number;
+  summary: DownloadSummary;
+};
+
+export type ReceiptControlsProcessResult = {
+  handledCount: number;
+  summary: DownloadSummary;
 };
 
 export async function processReceiptControls(
@@ -22,7 +33,9 @@ export async function processReceiptControls(
   downloadDirectory: string,
   downloadsDirectory: string,
   startIndex: number,
-): Promise<number> {
+  departure: DepartureYearMonth | null,
+): Promise<ReceiptControlsProcessResult> {
+  const summary = createDownloadSummary();
   const controls = findReceiptControls(page, config);
   const count = Math.min(await controls.count(), config.maxReceipts - startIndex + 1);
 
@@ -35,14 +48,19 @@ export async function processReceiptControls(
     }
     if (args.dryRun) {
       console.log(`保存予定: ${targetPath}`);
+      addDownloadedReceipt(summary, departure);
       continue;
     }
 
     await saveReceipt(page, controls.nth(i), targetPath, downloadsDirectory, config);
+    addDownloadedReceipt(summary, departure);
     console.log(`保存: ${targetPath}`);
   }
 
-  return count;
+  return {
+    handledCount: count,
+    summary,
+  };
 }
 
 export async function processReservationDetails(
@@ -66,9 +84,10 @@ export async function processReservationDetails(
 
   console.log(`${detailCount} 件の予約詳細を順番に確認します。`);
   let matchedRowCount = 0;
-  let savedOrPlanned = 0;
+  let nextReceiptIndex = 1;
+  const summary = createDownloadSummary();
 
-  for (let detailIndex = 0; detailIndex < detailCount && savedOrPlanned < config.maxReceipts; detailIndex += 1) {
+  for (let detailIndex = 0; detailIndex < detailCount && nextReceiptIndex <= config.maxReceipts; detailIndex += 1) {
     await ensureListPage(page, listUrl);
 
     const details = findDetailControls(page, config);
@@ -78,7 +97,8 @@ export async function processReservationDetails(
     }
 
     const detail = details.nth(detailIndex);
-    if (!await isTargetDetailRow(detail, targetMonth)) {
+    const departure = await getDetailRowDeparture(detail);
+    if (!matchesTargetMonth(departure, targetMonth)) {
       continue;
     }
 
@@ -93,14 +113,17 @@ export async function processReservationDetails(
         `スキップ: ${detailIndex + 1} 件目の詳細画面で領収書ボタンが見つかりません。主なボタン/リンク: ${visibleNames.join(" / ")}`,
       );
     } else {
-      savedOrPlanned += await processReceiptControls(
+      const receiptResult = await processReceiptControls(
         detailPage,
         config,
         args,
         downloadDirectory,
         downloadsDirectory,
-        savedOrPlanned + 1,
+        nextReceiptIndex,
+        departure,
       );
+      nextReceiptIndex += receiptResult.handledCount;
+      mergeDownloadSummaries(summary, receiptResult.summary);
     }
 
     if (detailPage !== page) {
@@ -110,15 +133,11 @@ export async function processReservationDetails(
 
   return {
     matchedRowCount,
-    processedCount: savedOrPlanned,
+    summary,
   };
 }
 
-async function isTargetDetailRow(detailControl: Locator, targetMonth: TargetMonth): Promise<boolean> {
-  if (isAllTargetMonth(targetMonth)) {
-    return true;
-  }
-
+async function getDetailRowDeparture(detailControl: Locator): Promise<DepartureYearMonth | null> {
   const departureText = await detailControl
     .locator("xpath=ancestor::tr[1]")
     .locator("th, td")
@@ -126,7 +145,7 @@ async function isTargetDetailRow(detailControl: Locator, targetMonth: TargetMont
     .innerText()
     .catch(() => "");
 
-  return matchesTargetMonth(parseDepartureYearMonth(departureText), targetMonth);
+  return parseDepartureYearMonth(departureText);
 }
 
 async function ensureListPage(page: Page, listUrl: string): Promise<void> {
