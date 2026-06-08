@@ -1,74 +1,179 @@
 # JR九州 領収書ダウンローダー
 
-JR九州インターネット列車予約の予約一覧画面から、各予約の詳細画面を順番に開き、表示されている領収書を保存する TypeScript CLI です。
+## 概要
 
-## 方針
+JR九州インターネット列車予約の予約一覧画面から、領収書を順番にPDFとして保存するTypeScript製CLIツールです。
 
-Playwright が直接起動するブラウザでは JR九州のログイン画面遷移で `ERR_HTTP2_PROTOCOL_ERROR` が出ることがあるため、この版では通常の Microsoft Edge を最小フラグで起動し、TypeScript から CDP 接続して操作します。
+Microsoft Edgeへのログインと予約一覧画面への移動はユーザーが手動で行い、その後の対象予約の抽出、詳細画面の確認、領収書PDFの保存、ファイル名の生成を自動化します。
 
-- パスワード、Cookie、ログイン状態を `.auth/` に保存しません。
-- Edge 実行中だけ一時プロファイルを使い、終了時に削除します。
-- ログイン、パスワード入力、追加認証は手動で行います。
-- Edge のリモートデバッグポートは `127.0.0.1` の空きポートに限定します。
-- GitHub への push は自動では行いません。
+## 主な機能
+
+- 予約一覧の「出発日時」を基準に、指定した月の予約だけを処理
+- `5`、`05`、`2026-05`、`00`、`all` 形式の対象月指定
+- 対象行の詳細画面と領収書画面を順番に開いてPDF保存
+- 出発日、区間、設定した氏名・費目を使用したファイル名生成
+- 設定した往路・復路に応じた区分番号の付与
+- 同名ファイルが存在する場合のスキップ
+- `--dry-run` による保存予定ファイル名の確認
+- 完了後の総件数と年月別件数の表示
+- 処理終了時のEdgeと一時プロファイルの自動終了・削除
+
+## 使用技術
+
+- TypeScript
+- Node.js
+- Playwright
+- Microsoft Edge
+- Chrome DevTools Protocol（CDP）
 
 ## セットアップ
 
+### 必要な環境
+
+- Windows
+- Node.js / npm
+- Microsoft Edge
+
+### インストール
+
 ```powershell
+git clone <repository-url>
+cd jr-kyusyu-receipt-dl
 npm.cmd install
-npx.cmd playwright install chromium
 Copy-Item config.example.json config.json
 ```
 
-## ダウンロード
+作成した `config.json` を、自分の利用内容に合わせて編集してください。
 
-まず保存予定を確認します。
+## 設定ファイル
 
-```powershell
-npm.cmd run download -- --dry-run
-```
-
-Edge が開いたら、JR九州にログインし、`予約確認・QR表示・変更・払いもどし` の予約一覧画面を表示してください。準備ができたらターミナルで Enter を押します。
-
-このツールは予約一覧の赤い `詳細` ボタンを上から順番に開き、詳細画面の中で `領収書` ボタンを探します。領収書がない予約はスキップします。領収書画面では `印刷` ボタンの処理を実行し、印刷用レイアウトをPDFとして保存します。JR九州サイトはブラウザの戻る操作を嫌うため、各詳細の確認後は一覧URLを再読み込みして次の予約へ進みます。
-
-問題なければ実際にダウンロードします。
-
-```powershell
-npm.cmd run download
-```
-
-既に同名ファイルがある場合は上書きせずスキップします。
-
-## 設定
-
-`config.json` の主な項目です。
+設定はプロジェクトルートの `config.json` から読み込みます。  
+`config.json` が存在しない場合はプログラム内の初期値が使われますが、正しいファイル名を生成するため、`config.example.json` をコピーして設定することを推奨します。
 
 ```json
 {
   "startUrl": "https://train.yoyaku.jrkyushu.co.jp/jr/login",
   "downloadDirectory": "./downloads",
-  "fileNameTemplate": "JR九州_{year}{month}_{index}.pdf",
-  "receiptLinkPatterns": ["領収書", "領収書を表示", "領収書表示"],
-  "detailButtonPatterns": ["詳細"],
-  "printButtonPatterns": ["印刷"],
+  "receipt": {
+    "name": "山田 太郎",
+    "expenseItem": "通勤費",
+    "outboundRoute": {
+      "from": "出発駅",
+      "to": "到着駅",
+      "number": 1
+    },
+    "returnRoute": {
+      "from": "到着駅",
+      "to": "出発駅",
+      "number": 2
+    }
+  },
+  "receiptLinkPatterns": [
+    "領収書",
+    "領収書を表示",
+    "領収書表示"
+  ],
+  "detailButtonPatterns": [
+    "詳細"
+  ],
+  "printButtonPatterns": [
+    "印刷"
+  ],
   "maxReceipts": 100,
   "startupTimeoutMs": 30000
 }
 ```
 
-保存名テンプレートで使える値:
+### 主な設定項目
 
-- `{year}`: 前月の西暦4桁
-- `{month}`: 前月の月2桁
-- `{index}`: 連番2桁
+| 項目 | 説明 |
+| --- | --- |
+| `startUrl` | Edge起動時に開くURL |
+| `downloadDirectory` | PDFの保存先。相対パスはプロジェクトルート基準 |
+| `receipt.name` | 出力ファイル名に使用する氏名 |
+| `receipt.expenseItem` | 出力ファイル名に使用する費目 |
+| `receipt.outboundRoute` | 往路の出発駅、到着駅、区分番号 |
+| `receipt.returnRoute` | 復路の出発駅、到着駅、区分番号 |
+| `receiptLinkPatterns` | 領収書ボタン・リンクの検索文字列 |
+| `detailButtonPatterns` | 予約詳細ボタンの検索文字列 |
+| `printButtonPatterns` | 領収書画面の印刷ボタンの検索文字列 |
+| `maxReceipts` | 1回の実行で処理する領収書の最大件数 |
+| `startupTimeoutMs` | Edgeの起動待ちタイムアウト時間（ミリ秒） |
+| `edgeExecutablePath` | Edgeを自動検出できない場合に指定する実行ファイルの絶対パス（任意） |
 
-Edge が標準の場所にない場合は `edgeExecutablePath` を追加してください。
+設定した駅名の末尾にある `駅` は、区間判定時に無視されます。
 
-```json
-{
-  "edgeExecutablePath": "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
-}
+`config.json` には氏名などの個人情報が含まれるため、Gitの管理対象外になっています。
+
+## 使い方
+
+### ダウンロードを実行する
+
+```powershell
+npm.cmd run download
 ```
 
-画面上のボタン名が変わった場合は、`receiptLinkPatterns`、`detailButtonPatterns`、`printButtonPatterns` に新しい文言を追加してください。
+実行後、対象月を入力します。
+
+| 入力例 | 対象 |
+| --- | --- |
+| `5` / `05` | 画面上に表示されている5月の予約 |
+| `2026-05` | 画面上に表示されている2026年5月の予約 |
+| `00` / `all` / `ALL` | 画面上に表示されているすべての予約 |
+
+対象月を入力すると、一時プロファイルを使用したMicrosoft Edgeが開きます。
+
+1. Edge上でJR九州Web会員サービスへ手動でログインします。
+2. 「予約確認・QR表示・変更・払いもどし」の予約一覧画面を表示します。
+3. ターミナルに戻り、Enterキーを押します。
+4. 対象予約の領収書が `downloadDirectory` に保存されます。
+5. 処理完了後、総件数と年月別件数が表示され、Edgeとプロセスが終了します。
+
+### 保存予定を確認する
+
+PDFを保存せず、対象予約と保存予定ファイル名を確認できます。
+
+```powershell
+npm.cmd run download -- --dry-run
+```
+
+### 型チェック
+
+```powershell
+npm.cmd run check
+```
+
+## 出力ファイル名の仕様
+
+PDFは次の形式で保存されます。
+
+```text
+YYYYMMDD_区分番号氏名_費目 領収書_JR出発駅⇒到着駅.pdf
+```
+
+例:
+
+```text
+20260511_1山田 太郎_通勤費 領収書_JR出発駅⇒到着駅.pdf
+20260511_2山田 太郎_通勤費 領収書_JR到着駅⇒出発駅.pdf
+```
+
+- `YYYYMMDD`: 予約一覧の出発日
+- `区分番号`: `outboundRoute` または `returnRoute` に設定した番号
+- `氏名`: `receipt.name`
+- `費目`: `receipt.expenseItem`
+- `出発駅⇒到着駅`: 予約一覧から取得した区間
+
+区間が設定済みの往路・復路のどちらにも一致しない場合は警告を表示し、区分番号 `9` を付けて保存します。  
+Windowsでファイル名に使用できない文字は、保存時に `_` へ置き換えます。
+
+## 注意事項
+
+- ログイン、パスワード入力、追加認証は自動化していません。
+- ログイン情報やセッション情報をプロジェクト内へ保存しません。
+- Edgeは実行ごとに一時プロファイルで起動し、処理終了時に削除されます。
+- 自動化中に開いたEdgeを手動で閉じると、処理は継続できません。
+- 予約一覧画面に表示されていない予約は処理対象になりません。
+- JR九州Webサイトの画面構成や文言が変更された場合、設定またはソースコードの修正が必要になることがあります。
+- 同名のPDFが既に保存されている場合は上書きせず、スキップします。
+- `config.json` と `downloads/` はGitの管理対象外です。
