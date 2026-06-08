@@ -7,7 +7,9 @@ import { openBrowserSession } from "./browser/edge.js";
 import { findAutomationPage } from "./browser/page.js";
 import { parseArgs } from "./cli/args.js";
 import { waitForEnter } from "./cli/prompt.js";
+import { formatTargetMonthLog, promptTargetMonth } from "./cli/targetMonth.js";
 import { loadConfig } from "./config/config.js";
+import { isAllTargetMonth } from "./jrKyushu/departureDate.js";
 import { findReceiptControls } from "./jrKyushu/locators.js";
 import {
   processReceiptControls,
@@ -23,6 +25,9 @@ export async function main(): Promise<void> {
   const session = await openBrowserSession(config);
 
   try {
+    const targetMonth = await promptTargetMonth();
+    console.log(formatTargetMonthLog(targetMonth));
+
     console.log("Edge でログインし、領収書を取得したい予約一覧を表示してください。");
     console.log("準備ができたら、このターミナルで Enter を押してください。");
     await waitForEnter();
@@ -34,15 +39,23 @@ export async function main(): Promise<void> {
     console.log(`対象ページ: ${activePage.url()}`);
 
     const directReceiptCount = await findReceiptControls(activePage, config).count();
-    const processedCount = directReceiptCount > 0
-      ? await processReceiptControls(activePage, config, args, downloadDirectory, session.downloadsDirectory, 1)
-      : await processReservationDetails(activePage, config, args, downloadDirectory, session.downloadsDirectory);
+    const result = directReceiptCount > 0
+      ? {
+        matchedRowCount: directReceiptCount,
+        processedCount: await processReceiptControls(activePage, config, args, downloadDirectory, session.downloadsDirectory, 1),
+      }
+      : await processReservationDetails(activePage, config, args, downloadDirectory, session.downloadsDirectory, targetMonth);
 
-    if (processedCount === 0) {
+    if (!isAllTargetMonth(targetMonth) && result.matchedRowCount === 0) {
+      console.log("指定された月の領収書は画面上に見つかりませんでした。");
+      return;
+    }
+
+    if (result.processedCount === 0) {
       throw new Error("領収書を1件も検出できませんでした。詳細画面の表示内容を確認してください。");
     }
 
-    console.log(`${processedCount} 件の領収書を処理しました。`);
+    console.log(`${result.processedCount} 件の領収書を処理しました。`);
   } finally {
     await session.browser.close().catch(() => undefined);
     session.edgeProcess.kill();
