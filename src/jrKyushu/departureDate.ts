@@ -1,8 +1,16 @@
-import type { DepartureYearMonth, TargetMonth } from "../types/targetMonth.js";
+import type { DepartureDate, DepartureYearMonth, TargetMonth } from "../types/targetMonth.js";
 
 // 予約一覧の出発日時セルから「年」と「月」だけを抜き出す。
 // セル内に曜日や時刻、改行が含まれるため、空白をならしてから判定する。
 export function parseDepartureYearMonth(text: string): DepartureYearMonth | null {
+  const departureDate = parseDepartureDate(text);
+  if (departureDate) {
+    return {
+      year: departureDate.year,
+      month: departureDate.month,
+    };
+  }
+
   const normalizedText = text.replace(/\s+/g, " ");
   const match = /(\d{4})年\s*(\d{1,2})月/.exec(normalizedText);
   if (!match) {
@@ -12,6 +20,21 @@ export function parseDepartureYearMonth(text: string): DepartureYearMonth | null
   return {
     year: Number(match[1]),
     month: Number(match[2]),
+  };
+}
+
+// ファイル名に使うため、予約一覧や領収書上の日付から年月日を抜き出す。
+export function parseDepartureDate(text: string): DepartureDate | null {
+  const normalizedText = text.replace(/\s+/g, " ");
+  const match = /(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日/.exec(normalizedText);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
   };
 }
 

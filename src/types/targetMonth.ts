@@ -7,3 +7,7 @@ export type DepartureYearMonth = {
   year: number;
   month: number;
 };
+
+export type DepartureDate = DepartureYearMonth & {
+  day: number;
+};

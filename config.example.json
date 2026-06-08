@@ -1,7 +1,20 @@
 {
     "startUrl":  "https://train.yoyaku.jrkyushu.co.jp/jr/login",
     "downloadDirectory":  "./downloads",
-    "fileNameTemplate":  "JR九州_{year}{month}_{index}.pdf",
+    "receipt":  {
+                    "name":  "山田 太郎",
+                    "expenseItem":  "通勤費",
+                    "outboundRoute":  {
+                                          "from":  "出発駅",
+                                          "to":  "到着駅",
+                                          "number":  1
+                                      },
+                    "returnRoute":  {
+                                        "from":  "到着駅",
+                                        "to":  "出発駅",
+                                        "number":  2
+                                    }
+                },
     "receiptLinkPatterns":  [
                                 "領収書",
                                 "領収書を表示",

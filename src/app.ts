@@ -48,7 +48,10 @@ export async function main(): Promise<void> {
     // すでに領収書ボタンがある画面で開始された場合だけ、その画面上の領収書を直接処理する。
     const directReceiptCount = await findReceiptControls(activePage, config).count();
     const directReceiptResult = directReceiptCount > 0
-      ? await processReceiptControls(activePage, config, args, downloadDirectory, session.downloadsDirectory, 1, null)
+      ? await processReceiptControls(activePage, config, args, downloadDirectory, session.downloadsDirectory, 1, {
+        departureDate: null,
+        route: null,
+      })
       : null;
     const result = directReceiptCount > 0
       ? {

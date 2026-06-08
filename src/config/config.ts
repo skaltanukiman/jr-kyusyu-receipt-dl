@@ -8,7 +8,20 @@ import type { Config } from "../types/config.js";
 export const defaultConfig: Config = {
   startUrl: "https://train.yoyaku.jrkyushu.co.jp/jr/login",
   downloadDirectory: "./downloads",
-  fileNameTemplate: "JR九州_{year}{month}_{index}.pdf",
+  receipt: {
+    name: "未設定",
+    expenseItem: "通勤費",
+    outboundRoute: {
+      from: "出発駅",
+      to: "到着駅",
+      number: 1,
+    },
+    returnRoute: {
+      from: "到着駅",
+      to: "出発駅",
+      number: 2,
+    },
+  },
   receiptLinkPatterns: ["領収書", "領収書を表示", "領収書表示"],
   detailButtonPatterns: ["詳細"],
   printButtonPatterns: ["印刷"],
@@ -33,6 +46,18 @@ export async function loadConfig(root: string): Promise<Config> {
   return {
     ...defaultConfig,
     ...value,
+    receipt: {
+      ...defaultConfig.receipt,
+      ...value.receipt,
+      outboundRoute: {
+        ...defaultConfig.receipt.outboundRoute,
+        ...value.receipt?.outboundRoute,
+      },
+      returnRoute: {
+        ...defaultConfig.receipt.returnRoute,
+        ...value.receipt?.returnRoute,
+      },
+    },
     startUrl: value.startUrl ?? value.listUrl ?? defaultConfig.startUrl,
   };
 }
