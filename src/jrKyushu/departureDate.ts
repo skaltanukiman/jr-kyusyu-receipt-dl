@@ -1,5 +1,7 @@
 import type { DepartureYearMonth, TargetMonth } from "../types/targetMonth.js";
 
+// 予約一覧の出発日時セルから「年」と「月」だけを抜き出す。
+// セル内に曜日や時刻、改行が含まれるため、空白をならしてから判定する。
 export function parseDepartureYearMonth(text: string): DepartureYearMonth | null {
   const normalizedText = text.replace(/\s+/g, " ");
   const match = /(\d{4})年\s*(\d{1,2})月/.exec(normalizedText);
@@ -13,6 +15,8 @@ export function parseDepartureYearMonth(text: string): DepartureYearMonth | null
   };
 }
 
+// ユーザーが指定した対象月に、予約行の出発年月が一致するか判定する。
+// 年指定なしの入力では月だけを見る。
 export function matchesTargetMonth(departure: DepartureYearMonth | null, targetMonth: TargetMonth): boolean {
   if (targetMonth.kind === "all") {
     return true;
@@ -29,6 +33,7 @@ export function matchesTargetMonth(departure: DepartureYearMonth | null, targetM
   return departure.month === targetMonth.month;
 }
 
+// 呼び出し側で全件指定かどうかを読みやすくするための小さな判定関数。
 export function isAllTargetMonth(targetMonth: TargetMonth): boolean {
   return targetMonth.kind === "all";
 }

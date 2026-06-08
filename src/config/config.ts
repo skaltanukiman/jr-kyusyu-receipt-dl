@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { Config } from "../types/config.js";
 
+// config.json がない場合に使う既定値。
+// サイト上の文言が変わった場合は、各 patterns を config.json で上書きできる。
 export const defaultConfig: Config = {
   startUrl: "https://train.yoyaku.jrkyushu.co.jp/jr/login",
   downloadDirectory: "./downloads",
@@ -14,6 +16,8 @@ export const defaultConfig: Config = {
   startupTimeoutMs: 30_000,
 };
 
+// config.json を読み込み、未指定の項目は defaultConfig で補う。
+// BOM付きJSONでも読めるよう、先頭のBOMだけ取り除いてからJSON.parseする。
 export async function loadConfig(root: string): Promise<Config> {
   const configPath = path.resolve(root, "config.json");
   if (!existsSync(configPath)) {

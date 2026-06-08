@@ -26,6 +26,8 @@ export type ReceiptControlsProcessResult = {
   summary: DownloadSummary;
 };
 
+// 1つの画面内にある領収書ボタンを順番に処理する。
+// 保存済みファイルは上書きせずスキップし、保存に成功したものだけを集計に加える。
 export async function processReceiptControls(
   page: Page,
   config: Config,
@@ -40,6 +42,7 @@ export async function processReceiptControls(
   const count = Math.min(await controls.count(), config.maxReceipts - startIndex + 1);
 
   for (let i = 0; i < count; i += 1) {
+    // ファイル名の連番は既存仕様を維持するため、画面上の処理順を基準にする。
     const receiptIndex = startIndex + i;
     const targetPath = path.join(downloadDirectory, formatFileName(config.fileNameTemplate, receiptIndex));
     if (existsSync(targetPath)) {
@@ -48,10 +51,12 @@ export async function processReceiptControls(
     }
     if (args.dryRun) {
       console.log(`保存予定: ${targetPath}`);
+      // dry-runでは実ファイルは保存しないが、処理対象として集計結果を確認できるようにする。
       addDownloadedReceipt(summary, departure);
       continue;
     }
 
+    // saveReceipt が正常に戻った時点で、PDF保存まで完了したものとして件数に加える。
     await saveReceipt(page, controls.nth(i), targetPath, downloadsDirectory, config);
     addDownloadedReceipt(summary, departure);
     console.log(`保存: ${targetPath}`);
@@ -63,6 +68,8 @@ export async function processReceiptControls(
   };
 }
 
+// 予約一覧の「詳細」ボタンを行単位で確認し、対象月に一致する行だけを開く。
+// 対象外の行は詳細画面に遷移しないため、余計な画面操作を避けられる。
 export async function processReservationDetails(
   page: Page,
   config: Config,
@@ -88,8 +95,10 @@ export async function processReservationDetails(
   const summary = createDownloadSummary();
 
   for (let detailIndex = 0; detailIndex < detailCount && nextReceiptIndex <= config.maxReceipts; detailIndex += 1) {
+    // JR九州の画面はブラウザの戻る操作に弱いため、毎回一覧URLへ戻してから次の行を探す。
     await ensureListPage(page, listUrl);
 
+    // 一覧へ戻るたびにDOMが作り直される可能性があるので、Locatorはループ内で取り直す。
     const details = findDetailControls(page, config);
     const currentDetailCount = await details.count();
     if (detailIndex >= currentDetailCount) {
@@ -97,6 +106,7 @@ export async function processReservationDetails(
     }
 
     const detail = details.nth(detailIndex);
+    // 詳細ボタンを押す前に、同じ行の出発日時を読んで対象月か判定する。
     const departure = await getDetailRowDeparture(detail);
     if (!matchesTargetMonth(departure, targetMonth)) {
       continue;
@@ -113,6 +123,8 @@ export async function processReservationDetails(
         `スキップ: ${detailIndex + 1} 件目の詳細画面で領収書ボタンが見つかりません。主なボタン/リンク: ${visibleNames.join(" / ")}`,
       );
     } else {
+      // 1つの詳細画面に複数の領収書ボタンがある場合もあるため、
+      // 詳細画面単位ではなく領収書ボタン単位で集計する。
       const receiptResult = await processReceiptControls(
         detailPage,
         config,
@@ -126,6 +138,7 @@ export async function processReservationDetails(
       mergeDownloadSummaries(summary, receiptResult.summary);
     }
 
+    // 詳細画面が別タブで開いた場合は、処理後に閉じて一覧側の操作へ戻る。
     if (detailPage !== page) {
       await detailPage.close().catch(() => undefined);
     }
@@ -137,6 +150,8 @@ export async function processReservationDetails(
   };
 }
 
+// 詳細ボタンのある行から「出発日時」列を読み取り、年月だけを抽出する。
+// 画面表示は改行を含むため、具体的な整形は parseDepartureYearMonth 側に寄せている。
 async function getDetailRowDeparture(detailControl: Locator): Promise<DepartureYearMonth | null> {
   const departureText = await detailControl
     .locator("xpath=ancestor::tr[1]")
@@ -148,6 +163,8 @@ async function getDetailRowDeparture(detailControl: Locator): Promise<DepartureY
   return parseDepartureYearMonth(departureText);
 }
 
+// 一覧へ戻るために page.goto を使う。
+// ブラウザバックではJR九州側が操作継続不可の画面を出すことがあるため。
 async function ensureListPage(page: Page, listUrl: string): Promise<void> {
   if (page.url() !== listUrl) {
     await page.goto(listUrl, { waitUntil: "domcontentloaded" });

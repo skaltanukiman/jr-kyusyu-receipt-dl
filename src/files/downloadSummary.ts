@@ -1,6 +1,7 @@
 import type { DownloadSummary } from "../types/downloadSummary.js";
 import type { DepartureYearMonth } from "../types/targetMonth.js";
 
+// ダウンロード件数の集計を初期化する。
 export function createDownloadSummary(): DownloadSummary {
   return {
     totalCount: 0,
@@ -8,6 +9,8 @@ export function createDownloadSummary(): DownloadSummary {
   };
 }
 
+// 保存に成功した領収書を総件数と年月別件数へ加算する。
+// 年月が取れない経路では、総件数だけを加算する。
 export function addDownloadedReceipt(summary: DownloadSummary, departure: DepartureYearMonth | null): void {
   summary.totalCount += 1;
 
@@ -19,6 +22,7 @@ export function addDownloadedReceipt(summary: DownloadSummary, departure: Depart
   summary.monthlyCounts.set(key, (summary.monthlyCounts.get(key) ?? 0) + 1);
 }
 
+// 詳細画面ごとの集計を、全体の集計へ合算する。
 export function mergeDownloadSummaries(target: DownloadSummary, source: DownloadSummary): void {
   target.totalCount += source.totalCount;
 
@@ -27,6 +31,7 @@ export function mergeDownloadSummaries(target: DownloadSummary, source: Download
   }
 }
 
+// 全処理完了後に、ユーザーが確認しやすい形で件数を表示する。
 export function printDownloadSummary(summary: DownloadSummary): void {
   console.log("ダウンロード結果:");
   console.log(`総件数: ${summary.totalCount} 件`);
