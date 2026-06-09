@@ -5,6 +5,9 @@ import type { RunArgs } from "../cli/args.js";
 import { clickMaybeNavigates, visibleControlNames } from "../browser/page.js";
 import {
   addDownloadedReceipt,
+  addExistingFileSkip,
+  addNoReceiptSkip,
+  addPlannedReceipt,
   createDownloadSummary,
   mergeDownloadSummaries,
 } from "../files/downloadSummary.js";
@@ -49,12 +52,13 @@ export async function processReceiptControls(
     const targetPath = path.join(downloadDirectory, formatReceiptFileName(config, receiptIndex, metadata));
     if (existsSync(targetPath)) {
       console.log(`スキップ: ${path.basename(targetPath)} は既に存在します。`);
+      addExistingFileSkip(summary, metadata.departureDate);
       continue;
     }
     if (args.dryRun) {
       console.log(`保存予定: ${targetPath}`);
       // dry-runでは実ファイルは保存しないが、処理対象として集計結果を確認できるようにする。
-      addDownloadedReceipt(summary, metadata.departureDate);
+      addPlannedReceipt(summary, metadata.departureDate);
       continue;
     }
 
@@ -124,6 +128,7 @@ export async function processReservationDetails(
       console.log(
         `スキップ: ${detailIndex + 1} 件目の詳細画面で領収書ボタンが見つかりません。主なボタン/リンク: ${visibleNames.join(" / ")}`,
       );
+      addNoReceiptSkip(summary, metadata.departureDate);
     } else {
       // 1つの詳細画面に複数の領収書ボタンがある場合もあるため、
       // 詳細画面単位ではなく領収書ボタン単位で集計する。

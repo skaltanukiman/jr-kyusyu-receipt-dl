@@ -65,10 +65,9 @@ export async function main(): Promise<void> {
       return;
     }
 
-    // totalCount は実際に保存した件数。
-    // 既存ファイルをスキップしたものは「ダウンロードした件数」には含めない。
+    // totalCount は、成功・スキップ・dry-runの保存予定を含む処理件数。
     if (result.summary.totalCount === 0) {
-      throw new Error("領収書を1件もダウンロードできませんでした。詳細画面の表示内容を確認してください。");
+      throw new Error("処理対象の領収書が見つかりませんでした。詳細画面の表示内容を確認してください。");
     }
 
     printDownloadSummary(result.summary);
