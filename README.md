@@ -25,6 +25,7 @@ Microsoft Edgeへのログインと予約一覧画面への移動はユーザー
 - Playwright
 - Microsoft Edge
 - Chrome DevTools Protocol（CDP）
+- Vitest
 
 ## セットアップ
 
@@ -142,6 +143,19 @@ npm.cmd run download -- --dry-run
 ```powershell
 npm.cmd run check
 ```
+
+### ユニットテスト
+
+実際のJR九州サイトやEdgeには接続せず、ファイル名生成、対象月指定、区間判定、設定読み込みなどの純粋なロジックを検証します。
+
+```powershell
+npm.cmd run test
+```
+
+### GitHub Actions
+
+`main` または `feature` ブランチへのpushと、各ブランチ向けのPull Request作成時に、GitHub Actionsで型チェックとユニットテストを自動実行します。  
+GitHubのリポジトリ画面にある「Actions」タブから、手動実行することもできます。
 
 ## 出力ファイル名の仕様
 

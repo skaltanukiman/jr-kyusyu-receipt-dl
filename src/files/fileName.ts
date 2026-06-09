@@ -1,7 +1,7 @@
-import type { Config, RouteConfig } from "../types/config.js";
+import type { Config } from "../types/config.js";
 import type { DepartureDate } from "../types/targetMonth.js";
 import type { ReceiptFileMetadata, RouteInfo } from "../types/route.js";
-import { formatRoute, normalizeStationName } from "../jrKyushu/route.js";
+import { formatRoute, matchesRoute } from "../jrKyushu/route.js";
 
 // 新しい命名規則で領収書PDFの保存ファイル名を作る。
 // 予約一覧から日付を取れない経路では、命名規則に必要な情報が不足するため最小限のフォールバック名にする。
@@ -35,7 +35,7 @@ function formatDepartureDate(date: DepartureDate): string {
   ].join("");
 }
 
-function resolveRouteNumber(config: Config, route: RouteInfo): number {
+export function resolveRouteNumber(config: Config, route: RouteInfo): number {
   if (matchesRoute(config.receipt.outboundRoute, route)) {
     return config.receipt.outboundRoute.number;
   }
@@ -49,12 +49,7 @@ function resolveRouteNumber(config: Config, route: RouteInfo): number {
   return 9;
 }
 
-function matchesRoute(configRoute: RouteConfig, route: RouteInfo): boolean {
-  return normalizeStationName(configRoute.from) === normalizeStationName(route.from)
-    && normalizeStationName(configRoute.to) === normalizeStationName(route.to);
-}
-
-function sanitizeWindowsFileName(fileName: string): string {
+export function sanitizeWindowsFileName(fileName: string): string {
   return fileName
     .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
     .replace(/[ .]+(?=\.pdf$)/, "");

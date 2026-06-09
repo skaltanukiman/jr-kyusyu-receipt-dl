@@ -1,3 +1,4 @@
+import type { RouteConfig } from "../types/config.js";
 import type { RouteInfo } from "../types/route.js";
 
 // 予約一覧や領収書に表示される区間文字列を、出発駅・到着駅に分解する。
@@ -59,6 +60,13 @@ export function normalizeStationName(value: string): string {
     .replace(/\s+/g, "")
     .replace(/駅$/u, "")
     .trim();
+}
+
+// 設定された区間と画面から取得した区間が同じか判定する。
+// 駅名末尾の「駅」と空白は、表記揺れとして無視する。
+export function matchesRoute(configRoute: RouteConfig, route: RouteInfo): boolean {
+  return normalizeStationName(configRoute.from) === normalizeStationName(route.from)
+    && normalizeStationName(configRoute.to) === normalizeStationName(route.to);
 }
 
 function looksLikeDepartureDate(value: string): boolean {
