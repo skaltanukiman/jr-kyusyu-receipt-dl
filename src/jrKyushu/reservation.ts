@@ -16,9 +16,10 @@ import type { Config } from "../types/config.js";
 import type { DownloadSummary } from "../types/downloadSummary.js";
 import type { ReceiptFileMetadata } from "../types/route.js";
 import type { TargetMonth } from "../types/targetMonth.js";
-import { matchesTargetMonth, parseDepartureDate } from "./departureDate.js";
+import { parseDepartureDate } from "./departureDate.js";
 import { findDetailControls, findReceiptControls } from "./locators.js";
 import { saveReceipt } from "./receipt.js";
+import { findReservationStatusText, isTargetReservationRow } from "./reservationStatus.js";
 import { normalizeStationName, parseRouteInfoFromCells } from "./route.js";
 
 export type ReservationProcessResult = {
@@ -29,6 +30,10 @@ export type ReservationProcessResult = {
 export type ReceiptControlsProcessResult = {
   handledCount: number;
   summary: DownloadSummary;
+};
+
+type ReservationRowMetadata = ReceiptFileMetadata & {
+  statusText: string;
 };
 
 // 1つの画面内にある領収書ボタンを順番に処理する。
@@ -74,7 +79,7 @@ export async function processReceiptControls(
   };
 }
 
-// 予約一覧の「詳細」ボタンを行単位で確認し、対象月に一致する行だけを開く。
+// 予約一覧の「詳細」ボタンを行単位で確認し、利用済みかつ対象月に一致する行だけを開く。
 // 対象外の行は詳細画面に遷移しないため、余計な画面操作を避けられる。
 export async function processReservationDetails(
   page: Page,
@@ -112,9 +117,9 @@ export async function processReservationDetails(
     }
 
     const detail = details.nth(detailIndex);
-    // 詳細ボタンを押す前に、同じ行の出発日時を読んで対象月か判定する。
+    // 詳細ボタンを押す前に、同じ行の予約状態と出発日時を読み、処理対象か判定する。
     const metadata = await getDetailRowMetadata(detail, config);
-    if (!matchesTargetMonth(metadata.departureDate, targetMonth)) {
+    if (!isTargetReservationRow(metadata.statusText, metadata.departureDate, targetMonth)) {
       continue;
     }
 
@@ -157,19 +162,26 @@ export async function processReservationDetails(
   };
 }
 
-// 詳細ボタンのある行から、ファイル名に使う出発日と区間を取り出す。
+// 詳細ボタンのある行から、予約状態とファイル名に使う出発日・区間を取り出す。
 // 画面表示は改行を含むため、具体的な整形は parseDepartureDate / parseRouteInfoFromCells 側に寄せている。
-async function getDetailRowMetadata(detailControl: Locator, config: Config): Promise<ReceiptFileMetadata> {
-  const cells = detailControl
-    .locator("xpath=ancestor::tr[1]")
-    .locator("th, td");
+async function getDetailRowMetadata(detailControl: Locator, config: Config): Promise<ReservationRowMetadata> {
+  const row = detailControl.locator("xpath=ancestor::tr[1]");
+  const cells = row.locator("th, td");
   const cellTexts = await cells.allInnerTexts().catch(() => []);
+  const headerTexts = await row
+    .locator("xpath=ancestor::table[1]")
+    .locator("tr")
+    .first()
+    .locator("th, td")
+    .allInnerTexts()
+    .catch(() => []);
   const departureText = await cells.nth(0).innerText().catch(() => "");
   const parsedRoute = parseRouteInfoFromCells(cellTexts);
 
   return {
     departureDate: parseDepartureDate(departureText),
     route: parsedRoute ?? findConfiguredRouteInCells(cellTexts, config),
+    statusText: findReservationStatusText(headerTexts, cellTexts),
   };
 }
 
