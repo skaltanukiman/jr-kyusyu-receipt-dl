@@ -112,6 +112,12 @@ Copy-Item config.example.json config.json
 
 ## 使い方
 
+### `execute.bat` から実行する
+
+Windowsでは、プロジェクトルートにある `execute.bat` をダブルクリックすると、通常のダウンロード処理を起動できます。
+
+このバッチファイルは通常のダウンロード実行用です。PDFを保存せず保存予定だけを確認する場合は、後述の `npm.cmd run download -- --dry-run` を使用してください。
+
 ### ダウンロードを実行する
 
 ```powershell
